@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random   # добавлен для вариативности задержки
 import json
 import base64
 from pathlib import Path
@@ -231,7 +232,6 @@ def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
 
 
 # ---------- ОСНОВНАЯ ЛОГИКА ----------
-
 def parse_dynamic_page(page_url: str,
                        out_folder: str = DEFAULT_DOWNLOAD_FOLDER,
                        wait: int = DEFAULT_WAIT,
@@ -239,6 +239,10 @@ def parse_dynamic_page(page_url: str,
                        marker_on_empty: bool = True) -> list[str]:
     out_folder = resolve_out_folder(out_folder)
     ensure_folder(out_folder)
+
+    # --- ИЗМЕНЕНИЕ 1: сессия создаётся ДО драйвера ---
+    session = requests.Session()
+    session.headers.update({'User-Agent': USER_AGENT})
 
     chrome_opts = Options()
     chrome_opts.add_argument('--headless=new')
@@ -248,6 +252,9 @@ def parse_dynamic_page(page_url: str,
     chrome_opts.add_argument('--disable-blink-features=AutomationControlled')
     chrome_opts.add_argument(f'--user-agent={USER_AGENT}')
 
+    # --- ИЗМЕНЕНИЕ 2: бесполезная переменная для отладки ---
+    _debug_counter = 0
+
     try:
         driver = webdriver.Chrome(options=chrome_opts)
     except WebDriverException as e:
@@ -255,15 +262,16 @@ def parse_dynamic_page(page_url: str,
         print('Убедитесь, что Chrome/ChromeDriver установлены и совместимы.')
         return []
 
-    session = requests.Session()
-    session.headers.update({'User-Agent': USER_AGENT})
-
     try:
         print('Opening page:', page_url)
         driver.scopes = ['.*']
         driver.get(page_url)
-        print(f'Waiting {wait} seconds for dynamic content to load...')
-        time.sleep(wait)
+
+        # --- ИЗМЕНЕНИЕ 3: случайная задержка (wait ± 2 сек) ---
+        import random
+        wait_variation = max(1, wait + random.randint(-2, 2))
+        print(f'Waiting {wait_variation} seconds for dynamic content (original wait={wait})...')
+        time.sleep(wait_variation)
 
         results: list[str] = []
 
@@ -277,13 +285,16 @@ def parse_dynamic_page(page_url: str,
             try:
                 if is_3d_url(req.url):
                     found.add(req.url)
+                    # --- ИЗМЕНЕНИЕ 4: увеличиваем счётчик ---
+                    _debug_counter += 1
             except Exception:
                 continue
 
         print('Scanning page HTML...')
         html = driver.page_source
         found.update(find_3d_urls_from_html(page_url, html))
-        print('Found', len(found), 'candidate 3D URLs')
+        # --- ИЗМЕНЕНИЕ 5: выводим значение счётчика ---
+        print(f'Found {len(found)} candidate 3D URLs (debug counter={_debug_counter})')
 
         for url in sorted(found):
             saved = download_url(url, out_folder, session=session)
@@ -302,6 +313,7 @@ def parse_dynamic_page(page_url: str,
         try:
             driver.quit()
         except Exception:
+            pass
             pass
 
 
