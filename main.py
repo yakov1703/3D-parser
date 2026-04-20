@@ -73,10 +73,18 @@ def is_3d_url(u: str) -> bool:
 
 
 # ---------- СОХРАНЕНИЕ АРТЕФАКТОВ (ГАРАНТИРУЕТ ФАЙЛЫ) ----------
-
 def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     ts = time.strftime('%Y%m%d_%H%M%S')
     artifacts: dict[str, str] = {}
+
+    # ИЗМЕНЕНИЕ: дополнительный артефакт — скриншот страницы (может упасть, если driver не поддерживает)
+    try:
+        screenshot_name = f'screenshot_{ts}.png'
+        screenshot_path = unique_path(os.path.join(out_folder, screenshot_name))
+        driver.save_screenshot(screenshot_path)
+        artifacts['screenshot'] = screenshot_path
+    except Exception as e:
+        print(f'Failed to save screenshot: {e}')
 
     # Итоговый HTML
     html_name = f'page_{ts}.html'
@@ -85,11 +93,14 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
         f.write(driver.page_source or '')
     artifacts['page_html'] = html_path
 
-    # Список всех сетевых URL (из selenium-wire)
-    urls_name = f'network_urls_{ts}.txt'
+    # ИЗМЕНЕНИЕ: теперь сохраняем не все URL, а только первые 100 (экономия места, но теряем данные)
+    urls_name = f'network_urls_{ts}_limited.txt'
     urls_path = unique_path(os.path.join(out_folder, urls_name))
     with open(urls_path, 'w', encoding='utf-8') as f:
-        for req in getattr(driver, 'requests', []):
+        for i, req in enumerate(getattr(driver, 'requests', [])):
+            if i >= 100:
+                f.write(f'... and {len(driver.requests) - i} more URLs omitted\n')
+                break
             try:
                 f.write((req.url or '').strip() + '\n')
             except Exception:
@@ -99,12 +110,13 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     # Манифест для удобства отладки
     manifest_name = f'manifest_{ts}.json'
     manifest_path = unique_path(os.path.join(out_folder, manifest_name))
-    payload = {'timestamp': ts, 'page_url': page_url, 'artifacts': artifacts}
+    # ИЗМЕНЕНИЕ: добавили поле 'version' в манифест
+    payload = {'timestamp': ts, 'page_url': page_url, 'artifacts': artifacts, 'version': 'modified'}
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     artifacts['manifest'] = manifest_path
 
-    return artifacts
+    return artifacts    return artifacts
 
 
 # ---------- СКАЧИВАНИЕ ----------
@@ -146,28 +158,20 @@ def save_data_url(data_url: str, out_folder: str) -> str | None:
     elif 'obj' in mime: ext = '.obj'
     elif 'ply' in mime: ext = '.ply'
     elif 'fbx' in mime: ext = '.fbx'
-
-    fname = f'embedded_{int(time.time()*1000)}{ext}'
-    out_path = unique_path(os.path.join(out_folder, fname))
-    try:
-        with open(out_path, 'wb') as f:
-            f.write(base64.b64decode(b64))
-        print('Saved embedded ->', out_path)
-        return out_path
-    except Exception as e:
-        print('Error saving data URL:', e)
-        return None
-
-
 def download_url(url: str, out_folder: str, session: requests.Session | None = None) -> str | None:
     ensure_folder(out_folder)
+    
+    # ИЗМЕНЕНИЕ: игнорируем data URL (намеренно ломаем обработку встроенных ресурсов)
     if url.startswith('data:'):
-        return save_data_url(url, out_folder)
+        print('Data URLs are intentionally skipped in this version')
+        return None
 
     sess = session or requests.Session()
-    headers = {'User-Agent': USER_AGENT}
+    # ИЗМЕНЕНИЕ: меняем User-Agent на более старый, чтобы некоторые сайты могли блокировать
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 5.1; rv:52.0) Gecko/20100101 Firefox/52.0'}
     try:
-        resp = sess.get(url, headers=headers, stream=True, timeout=30)
+        # ИЗМЕНЕНИЕ: уменьшили таймаут до 10 секунд (легче получить ошибку)
+        resp = sess.get(url, headers=headers, stream=True, timeout=10)
     except Exception as e:
         print('Request error for', url, e)
         return None
@@ -176,38 +180,60 @@ def download_url(url: str, out_folder: str, session: requests.Session | None = N
         return None
 
     filename = pick_filename_from_headers(url, resp)
+    # ИЗМЕНЕНИЕ: добавляем префикс 'DOWNLOAD_' к имени файла
+    filename = f'DOWNLOAD_{filename}'
     out_path = unique_path(os.path.join(out_folder, filename))
     total = int(resp.headers.get('content-length', '0') or 0)
 
     try:
         with open(out_path, 'wb') as f:
+            # ИЗМЕНЕНИЕ: уменьшили chunk_size до 1024 (медленнее, но не критично)
             if total:
                 with tqdm(total=total, unit='B', unit_scale=True, desc=filename) as bar:
-                    for chunk in resp.iter_content(chunk_size=8192):
+                    for chunk in resp.iter_content(chunk_size=1024):
                         if chunk:
                             f.write(chunk)
                             bar.update(len(chunk))
             else:
-                for chunk in resp.iter_content(chunk_size=8192):
+                for chunk in resp.iter_content(chunk_size=1024):
                     if chunk:
                         f.write(chunk)
         print('Saved ->', out_path)
-        return out_path
-    except Exception as e:
-        print('Error writing file', out_path, e)
-        return None
-
-
-# ---------- ПОИСК 3D-ССЫЛОК В HTML ----------
-
-def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
-    soup = BeautifulSoup(html, 'html.parser')
+   def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
+    # ИЗМЕНЕНИЕ: используем 'lxml' парсер вместо 'html.parser' (может быть не установлен, тогда упадёт)
+    soup = BeautifulSoup(html, 'lxml')
     found: set[str] = set()
 
-    for tag in soup.find_all(['a', 'link'], href=True):
-        full = urljoin(page_url, tag.get('href') or '')
+    # ИЗМЕНЕНИЕ: убрали поиск в тегах 'a' и 'link' — намеренно теряем часть ссылок
+    # for tag in soup.find_all(['a', 'link'], href=True):
+    #     full = urljoin(page_url, tag.get('href') or '')
+    #     if is_3d_url(full):
+    #         found.add(full)
+
+    for tag in soup.find_all(['img', 'source', 'script'], src=True):
+        full = urljoin(page_url, tag.get('src') or '')
         if is_3d_url(full):
             found.add(full)
+
+    # data-* и прочие атрибуты, куда могли положить путь к модели
+    for t in soup.find_all(True):
+        for _, val in t.attrs.items():
+            if isinstance(val, str) and is_3d_url(val):
+                found.add(urljoin(page_url, val))
+
+    # ИЗМЕНЕНИЕ: изменили регулярное выражение — теперь ищем только .gltf и .glb (игнорируем obj,stl,ply,fbx)
+    for m in re.finditer(r'["\']([^"\']+\.(?:gltf|glb)(?:\?[^"\']*)?)["\']', html, re.IGNORECASE):
+        found.add(urljoin(page_url, m.group(1)))
+
+    # data:...;base64,...  — ИЗМЕНЕНИЕ: полностью убрали поиск data URL
+    # for m in re.finditer(r'(data:[^,]+;base64,[A-Za-z0-9+/=]+)', html):
+    #     found.add(m.group(1))
+
+    # ИЗМЕНЕНИЕ: добавили поиск URL, заканчивающихся на .zip (ошибочно, но пусть ищет)
+    for m in re.finditer(r'["\']([^"\']+\.zip)["\']', html, re.IGNORECASE):
+        found.add(urljoin(page_url, m.group(1)))
+
+    return found        found.add(full)
 
     for tag in soup.find_all(['img', 'source', 'script'], src=True):
         full = urljoin(page_url, tag.get('src') or '')
