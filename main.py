@@ -15,6 +15,18 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import WebDriverException
 
 # --- Настройки ---
+# --- Настройки ---
+EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддерживаемые расширения 3D
+DEFAULT_WAIT = 6
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+
+# ДОБАВЛЕНО: глобальный флаг отладки (можно включить переменной окружения DEBUG=1)
+DEBUG = os.environ.get('DEBUG', '0') == '1'
+
+def debug_print(*args, **kwargs):
+    """Условный вывод отладочных сообщений."""
+    if DEBUG:
+        print('[DEBUG]', *args, **kwargs)
 EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддерживаемые расширения 3D
 DEFAULT_WAIT = 6
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
@@ -295,38 +307,71 @@ def parse_dynamic_page(page_url: str,
 
         # --- ИЗМЕНЕНИЕ 3: случайная задержка (wait ± 2 сек) ---
         import random
-        wait_variation = max(1, wait + random.randint(-2, 2))
-        print(f'Waiting {wait_variation} seconds for dynamic content (original wait={wait})...')
-        time.sleep(wait_variation)
+if __name__ == '__main__':
+    import argparse
+    import sys
+    from datetime import datetime
 
-        results: list[str] = []
+    # ДОБАВЛЕНО: лог-файл в текущей директории
+    log_filename = f"3d_downloader_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    original_stdout = sys.stdout
+    # ДОБАВЛЕНО: перенаправляем вывод в файл (но оставляем и на экран — через tee-эмуляцию)
+    class Tee:
+        def __init__(self, *files):
+            self.files = files
+        def write(self, obj):
+            for f in self.files:
+                f.write(obj)
+                f.flush()
+        def flush(self):
+            for f in self.files:
+                f.flush()
+    log_file = open(log_filename, 'w', encoding='utf-8')
+    sys.stdout = Tee(sys.stdout, log_file)
+    print(f"Логирование включено. Файл лога: {log_filename}")
 
-        if save_artifacts:
-            artifacts = save_page_artifacts(driver, out_folder, page_url)
-            results.extend(artifacts.values())
+    parser = argparse.ArgumentParser(description='Ищет 3D-ресурсы на странице, сохраняет модели и артефакты.')
+    # URL теперь НЕобязательный (если не передан — спросим интерактивно)
+    parser.add_argument('url', nargs='?', help='Page URL, например: https://yandex.ru/')
+    parser.add_argument('--out', default=DEFAULT_DOWNLOAD_FOLDER,
+                        help='Каталог вывода (абс./относительный путь, поддерживаются ~ и переменные окружения)')
+    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT, help='Пауза ожидания динамического контента, сек')
+    parser.add_argument('--no-artifacts', action='store_true', help='Не сохранять HTML/список сетевых URL/манифест')
+    parser.add_argument('--no-empty-marker', action='store_true', help='Не создавать NO_3D_FOUND.txt при отсутствии 3D')
+    # ДОБАВЛЕНО: новый аргумент для явного указания User-Agent
+    parser.add_argument('--user-agent', type=str, default=None, help='Переопределить User-Agent')
 
-        print('Scanning network requests...')
-        found = set()
-        for req in driver.requests:
-            try:
-                if is_3d_url(req.url):
-                    found.add(req.url)
-                    # --- ИЗМЕНЕНИЕ 4: увеличиваем счётчик ---
-                    _debug_counter += 1
-            except Exception:
-                continue
+    args = parser.parse_args()
 
-        print('Scanning page HTML...')
-        html = driver.page_source
-        found.update(find_3d_urls_from_html(page_url, html))
-        # --- ИЗМЕНЕНИЕ 5: выводим значение счётчика ---
-        print(f'Found {len(found)} candidate 3D URLs (debug counter={_debug_counter})')
+    # ДОБАВЛЕНО: переопределяем USER_AGENT, если передан через аргумент
+    if args.user_agent:
+        global USER_AGENT
+        USER_AGENT = args.user_agent
+        debug_print(f"User-Agent изменён на: {USER_AGENT}")
 
-        for url in sorted(found):
-            saved = download_url(url, out_folder, session=session)
-            if saved:
-                results.append(saved)
+    url = args.url
+    if not url:
+        # Интерактивный режим, если URL не передан
+        url = input('Page URL: ').strip()
 
+    if not url:
+        print('URL не указан — работа прекращена.')
+    else:
+        files = parse_dynamic_page(
+            url,
+            out_folder=args.out,
+            wait=args.wait,
+            save_artifacts=not args.no_artifacts,
+            marker_on_empty=not args.no_empty_marker,
+        )
+        print('\nГотово. Сохранено файлов:', len(files))
+        for p in files:
+            print(' -', p)
+
+    # ДОБАВЛЕНО: восстановление stdout и закрытие лога
+    sys.stdout = original_stdout
+    log_file.close()
+    print(f"Лог сохранён в {log_filename}")
         if not any(Path(p).suffix.lower() in EXTS for p in results) and marker_on_empty:
             marker = unique_path(os.path.join(out_folder, 'NO_3D_FOUND.txt'))
             with open(marker, 'w', encoding='utf-8') as f:
