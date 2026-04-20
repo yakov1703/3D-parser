@@ -61,14 +61,19 @@ def resolve_out_folder(path_like: str | None) -> str:
 
 def ensure_folder(path: str):
     Path(path).mkdir(parents=True, exist_ok=True)
+def is_3d_url(u: str) -> bool:
+    if not u:
+        return False
+    u = u.strip()
+    if u.startswith('data:'):
+        # Ограничиваем длину data URL до 500 символов (игнорируем очень большие встроенные данные)
+        if len(u) > 500:
+            return False
+        return True
+    p = u.split('?')[0].split('#')[0].lower()
+    # Добавлено расширение .3mf (формат 3D-печати)
+    return any(p.endswith(ext) for ext in EXTS + ('.3mf',))
 
-
-def unique_path(out_path: str) -> str:
-    """Возвращает уникальный путь (file (1).ext, file (2).ext, ...)."""
-    base, ext = os.path.splitext(out_path)
-    cand = out_path
-    i = 1
-    while os.path.exists(cand):
         cand = f"{base} ({i}){ext}"
         i += 1
     return cand
