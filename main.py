@@ -18,17 +18,6 @@ EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддержива
 DEFAULT_WAIT = 6
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
 
-# ДОБАВЛЕНО: глобальный флаг отладки (можно включить переменной окружения DEBUG=1)
-DEBUG = os.environ.get('DEBUG', '0') == '1'
-
-def debug_print(*args, **kwargs):
-    """Условный вывод отладочных сообщений."""
-    if DEBUG:
-        print('[DEBUG]', *args, **kwargs)
-EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддерживаемые расширения 3D
-DEFAULT_WAIT = 6
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
-
 
 def default_download_root() -> Path:
     """Подбор дефолтного каталога загрузки для разных ОС."""
@@ -59,24 +48,19 @@ def resolve_out_folder(path_like: str | None) -> str:
 
 def ensure_folder(path: str):
     Path(path).mkdir(parents=True, exist_ok=True)
-def is_3d_url(u: str) -> bool:
-    if not u:
-        return False
-    u = u.strip()
-    if u.startswith('data:'):
-        # Ограничиваем длину data URL до 500 символов (игнорируем очень большие встроенные данные)
-        if len(u) > 500:
-            return False
-        return True
-    p = u.split('?')[0].split('#')[0].lower()
-    # Добавлено расширение .3mf (формат 3D-печати)
-    return any(p.endswith(ext) for ext in EXTS + ('.3mf',))
 
+
+def unique_path(out_path: str) -> str:
+    """Возвращает уникальный путь (file (1).ext, file (2).ext, ...)."""
+    base, ext = os.path.splitext(out_path)
+    cand = out_path
+    i = 1
+    while os.path.exists(cand):
         cand = f"{base} ({i}){ext}"
         i += 1
     return cand
 
-
+    
 def is_3d_url(u: str) -> bool:
     if not u:
         return False
@@ -88,20 +72,12 @@ def is_3d_url(u: str) -> bool:
 
 
 # ---------- СОХРАНЕНИЕ АРТЕФАКТОВ (ГАРАНТИРУЕТ ФАЙЛЫ) ----------
+
 def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     ts = time.strftime('%Y%m%d_%H%M%S')
     artifacts: dict[str, str] = {}
 
-    # ИЗМЕНЕНИЕ: дополнительный артефакт — скриншот страницы (может упасть, если driver не поддерживает)
-    try:
-        screenshot_name = f'screenshot_{ts}.png'
-        screenshot_path = unique_path(os.path.join(out_folder, screenshot_name))
-        driver.save_screenshot(screenshot_path)
-        artifacts['screenshot'] = screenshot_path
-    except Exception as e:
-        print(f'Failed to save screenshot: {e}')
-
-    # Итоговый HTML
+     # Итоговый HTML
     html_name = f'page_{ts}.html'
     html_path = unique_path(os.path.join(out_folder, html_name))
     with open(html_path, 'w', encoding='utf-8') as f:
