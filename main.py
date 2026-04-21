@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import random   # добавлен для вариативности задержки
 import json
 import base64
 from pathlib import Path
@@ -14,7 +13,6 @@ from seleniumwire import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import WebDriverException
 
-# --- Настройки ---
 # --- Настройки ---
 EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддерживаемые расширения 3D
 DEFAULT_WAIT = 6
