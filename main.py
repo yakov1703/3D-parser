@@ -60,7 +60,7 @@ def unique_path(out_path: str) -> str:
         i += 1
     return cand
 
-    
+
 def is_3d_url(u: str) -> bool:
     if not u:
         return False
@@ -77,21 +77,18 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     ts = time.strftime('%Y%m%d_%H%M%S')
     artifacts: dict[str, str] = {}
 
-     # Итоговый HTML
+    # Итоговый HTML
     html_name = f'page_{ts}.html'
     html_path = unique_path(os.path.join(out_folder, html_name))
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(driver.page_source or '')
     artifacts['page_html'] = html_path
 
-    # ИЗМЕНЕНИЕ: теперь сохраняем не все URL, а только первые 100 (экономия места, но теряем данные)
-    urls_name = f'network_urls_{ts}_limited.txt'
+    # Список всех сетевых URL (из selenium-wire)
+    urls_name = f'network_urls_{ts}.txt'
     urls_path = unique_path(os.path.join(out_folder, urls_name))
     with open(urls_path, 'w', encoding='utf-8') as f:
-        for i, req in enumerate(getattr(driver, 'requests', [])):
-            if i >= 100:
-                f.write(f'... and {len(driver.requests) - i} more URLs omitted\n')
-                break
+        for req in getattr(driver, 'requests', []):
             try:
                 f.write((req.url or '').strip() + '\n')
             except Exception:
@@ -101,13 +98,12 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     # Манифест для удобства отладки
     manifest_name = f'manifest_{ts}.json'
     manifest_path = unique_path(os.path.join(out_folder, manifest_name))
-    # ИЗМЕНЕНИЕ: добавили поле 'version' в манифест
-    payload = {'timestamp': ts, 'page_url': page_url, 'artifacts': artifacts, 'version': 'modified'}
+    payload = {'timestamp': ts, 'page_url': page_url, 'artifacts': artifacts}
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     artifacts['manifest'] = manifest_path
 
-    return artifacts    return artifacts
+    return artifacts
 
 
 # ---------- СКАЧИВАНИЕ ----------
@@ -149,20 +145,28 @@ def save_data_url(data_url: str, out_folder: str) -> str | None:
     elif 'obj' in mime: ext = '.obj'
     elif 'ply' in mime: ext = '.ply'
     elif 'fbx' in mime: ext = '.fbx'
-def download_url(url: str, out_folder: str, session: requests.Session | None = None) -> str | None:
-    ensure_folder(out_folder)
-    
-    # ИЗМЕНЕНИЕ: игнорируем data URL (намеренно ломаем обработку встроенных ресурсов)
-    if url.startswith('data:'):
-        print('Data URLs are intentionally skipped in this version')
+
+    fname = f'embedded_{int(time.time()*1000)}{ext}'
+    out_path = unique_path(os.path.join(out_folder, fname))
+    try:
+        with open(out_path, 'wb') as f:
+            f.write(base64.b64decode(b64))
+        print('Saved embedded ->', out_path)
+        return out_path
+    except Exception as e:
+        print('Error saving data URL:', e)
         return None
 
+
+def download_url(url: str, out_folder: str, session: requests.Session | None = None) -> str | None:
+    ensure_folder(out_folder)
+    if url.startswith('data:'):
+        return save_data_url(url, out_folder)
+
     sess = session or requests.Session()
-    # ИЗМЕНЕНИЕ: меняем User-Agent на более старый, чтобы некоторые сайты могли блокировать
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 5.1; rv:52.0) Gecko/20100101 Firefox/52.0'}
+    headers = {'User-Agent': USER_AGENT}
     try:
-        # ИЗМЕНЕНИЕ: уменьшили таймаут до 10 секунд (легче получить ошибку)
-        resp = sess.get(url, headers=headers, stream=True, timeout=10)
+        resp = sess.get(url, headers=headers, stream=True, timeout=30)
     except Exception as e:
         print('Request error for', url, e)
         return None
@@ -171,60 +175,38 @@ def download_url(url: str, out_folder: str, session: requests.Session | None = N
         return None
 
     filename = pick_filename_from_headers(url, resp)
-    # ИЗМЕНЕНИЕ: добавляем префикс 'DOWNLOAD_' к имени файла
-    filename = f'DOWNLOAD_{filename}'
     out_path = unique_path(os.path.join(out_folder, filename))
     total = int(resp.headers.get('content-length', '0') or 0)
 
     try:
         with open(out_path, 'wb') as f:
-            # ИЗМЕНЕНИЕ: уменьшили chunk_size до 1024 (медленнее, но не критично)
             if total:
                 with tqdm(total=total, unit='B', unit_scale=True, desc=filename) as bar:
-                    for chunk in resp.iter_content(chunk_size=1024):
+                    for chunk in resp.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
                             bar.update(len(chunk))
             else:
-                for chunk in resp.iter_content(chunk_size=1024):
+                for chunk in resp.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
         print('Saved ->', out_path)
-   def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
-    # ИЗМЕНЕНИЕ: используем 'lxml' парсер вместо 'html.parser' (может быть не установлен, тогда упадёт)
-    soup = BeautifulSoup(html, 'lxml')
+        return out_path
+    except Exception as e:
+        print('Error writing file', out_path, e)
+        return None
+
+
+# ---------- ПОИСК 3D-ССЫЛОК В HTML ----------
+
+def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
+    soup = BeautifulSoup(html, 'html.parser')
     found: set[str] = set()
 
-    # ИЗМЕНЕНИЕ: убрали поиск в тегах 'a' и 'link' — намеренно теряем часть ссылок
-    # for tag in soup.find_all(['a', 'link'], href=True):
-    #     full = urljoin(page_url, tag.get('href') or '')
-    #     if is_3d_url(full):
-    #         found.add(full)
-
-    for tag in soup.find_all(['img', 'source', 'script'], src=True):
-        full = urljoin(page_url, tag.get('src') or '')
+    for tag in soup.find_all(['a', 'link'], href=True):
+        full = urljoin(page_url, tag.get('href') or '')
         if is_3d_url(full):
             found.add(full)
-
-    # data-* и прочие атрибуты, куда могли положить путь к модели
-    for t in soup.find_all(True):
-        for _, val in t.attrs.items():
-            if isinstance(val, str) and is_3d_url(val):
-                found.add(urljoin(page_url, val))
-
-    # ИЗМЕНЕНИЕ: изменили регулярное выражение — теперь ищем только .gltf и .glb (игнорируем obj,stl,ply,fbx)
-    for m in re.finditer(r'["\']([^"\']+\.(?:gltf|glb)(?:\?[^"\']*)?)["\']', html, re.IGNORECASE):
-        found.add(urljoin(page_url, m.group(1)))
-
-    # data:...;base64,...  — ИЗМЕНЕНИЕ: полностью убрали поиск data URL
-    # for m in re.finditer(r'(data:[^,]+;base64,[A-Za-z0-9+/=]+)', html):
-    #     found.add(m.group(1))
-
-    # ИЗМЕНЕНИЕ: добавили поиск URL, заканчивающихся на .zip (ошибочно, но пусть ищет)
-    for m in re.finditer(r'["\']([^"\']+\.zip)["\']', html, re.IGNORECASE):
-        found.add(urljoin(page_url, m.group(1)))
-
-    return found        found.add(full)
 
     for tag in soup.find_all(['img', 'source', 'script'], src=True):
         full = urljoin(page_url, tag.get('src') or '')
@@ -249,6 +231,7 @@ def download_url(url: str, out_folder: str, session: requests.Session | None = N
 
 
 # ---------- ОСНОВНАЯ ЛОГИКА ----------
+
 def parse_dynamic_page(page_url: str,
                        out_folder: str = DEFAULT_DOWNLOAD_FOLDER,
                        wait: int = DEFAULT_WAIT,
@@ -256,10 +239,6 @@ def parse_dynamic_page(page_url: str,
                        marker_on_empty: bool = True) -> list[str]:
     out_folder = resolve_out_folder(out_folder)
     ensure_folder(out_folder)
-
-    # --- ИЗМЕНЕНИЕ 1: сессия создаётся ДО драйвера ---
-    session = requests.Session()
-    session.headers.update({'User-Agent': USER_AGENT})
 
     chrome_opts = Options()
     chrome_opts.add_argument('--headless=new')
@@ -269,9 +248,6 @@ def parse_dynamic_page(page_url: str,
     chrome_opts.add_argument('--disable-blink-features=AutomationControlled')
     chrome_opts.add_argument(f'--user-agent={USER_AGENT}')
 
-    # --- ИЗМЕНЕНИЕ 2: бесполезная переменная для отладки ---
-    _debug_counter = 0
-
     try:
         driver = webdriver.Chrome(options=chrome_opts)
     except WebDriverException as e:
@@ -279,78 +255,41 @@ def parse_dynamic_page(page_url: str,
         print('Убедитесь, что Chrome/ChromeDriver установлены и совместимы.')
         return []
 
+    session = requests.Session()
+    session.headers.update({'User-Agent': USER_AGENT})
+
     try:
         print('Opening page:', page_url)
         driver.scopes = ['.*']
         driver.get(page_url)
+        print(f'Waiting {wait} seconds for dynamic content to load...')
+        time.sleep(wait)
 
-        # --- ИЗМЕНЕНИЕ 3: случайная задержка (wait ± 2 сек) ---
-        import random
-if __name__ == '__main__':
-    import argparse
-    import sys
-    from datetime import datetime
+        results: list[str] = []
 
-    # ДОБАВЛЕНО: лог-файл в текущей директории
-    log_filename = f"3d_downloader_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    original_stdout = sys.stdout
-    # ДОБАВЛЕНО: перенаправляем вывод в файл (но оставляем и на экран — через tee-эмуляцию)
-    class Tee:
-        def __init__(self, *files):
-            self.files = files
-        def write(self, obj):
-            for f in self.files:
-                f.write(obj)
-                f.flush()
-        def flush(self):
-            for f in self.files:
-                f.flush()
-    log_file = open(log_filename, 'w', encoding='utf-8')
-    sys.stdout = Tee(sys.stdout, log_file)
-    print(f"Логирование включено. Файл лога: {log_filename}")
+        if save_artifacts:
+            artifacts = save_page_artifacts(driver, out_folder, page_url)
+            results.extend(artifacts.values())
 
-    parser = argparse.ArgumentParser(description='Ищет 3D-ресурсы на странице, сохраняет модели и артефакты.')
-    # URL теперь НЕобязательный (если не передан — спросим интерактивно)
-    parser.add_argument('url', nargs='?', help='Page URL, например: https://yandex.ru/')
-    parser.add_argument('--out', default=DEFAULT_DOWNLOAD_FOLDER,
-                        help='Каталог вывода (абс./относительный путь, поддерживаются ~ и переменные окружения)')
-    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT, help='Пауза ожидания динамического контента, сек')
-    parser.add_argument('--no-artifacts', action='store_true', help='Не сохранять HTML/список сетевых URL/манифест')
-    parser.add_argument('--no-empty-marker', action='store_true', help='Не создавать NO_3D_FOUND.txt при отсутствии 3D')
-    # ДОБАВЛЕНО: новый аргумент для явного указания User-Agent
-    parser.add_argument('--user-agent', type=str, default=None, help='Переопределить User-Agent')
+        print('Scanning network requests...')
+        found = set()
+        for req in driver.requests:
+            try:
+                if is_3d_url(req.url):
+                    found.add(req.url)
+            except Exception:
+                continue
 
-    args = parser.parse_args()
+        print('Scanning page HTML...')
+        html = driver.page_source
+        found.update(find_3d_urls_from_html(page_url, html))
+        print('Found', len(found), 'candidate 3D URLs')
 
-    # ДОБАВЛЕНО: переопределяем USER_AGENT, если передан через аргумент
-    if args.user_agent:
-        global USER_AGENT
-        USER_AGENT = args.user_agent
-        debug_print(f"User-Agent изменён на: {USER_AGENT}")
+        for url in sorted(found):
+            saved = download_url(url, out_folder, session=session)
+            if saved:
+                results.append(saved)
 
-    url = args.url
-    if not url:
-        # Интерактивный режим, если URL не передан
-        url = input('Page URL: ').strip()
-
-    if not url:
-        print('URL не указан — работа прекращена.')
-    else:
-        files = parse_dynamic_page(
-            url,
-            out_folder=args.out,
-            wait=args.wait,
-            save_artifacts=not args.no_artifacts,
-            marker_on_empty=not args.no_empty_marker,
-        )
-        print('\nГотово. Сохранено файлов:', len(files))
-        for p in files:
-            print(' -', p)
-
-    # ДОБАВЛЕНО: восстановление stdout и закрытие лога
-    sys.stdout = original_stdout
-    log_file.close()
-    print(f"Лог сохранён в {log_filename}")
         if not any(Path(p).suffix.lower() in EXTS for p in results) and marker_on_empty:
             marker = unique_path(os.path.join(out_folder, 'NO_3D_FOUND.txt'))
             with open(marker, 'w', encoding='utf-8') as f:
@@ -363,7 +302,6 @@ if __name__ == '__main__':
         try:
             driver.quit()
         except Exception:
-            pass
             pass
 
 
