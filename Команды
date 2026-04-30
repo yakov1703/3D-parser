@@ -1,0 +1,7 @@
+python3 -m venv .venv
+
+source .venv/bin/activate
+
+pip
+
+pip install requests beautifulsoup4 tqdm selenium selenium-wire==5.1.0 blinker==1.7.0 webdriver-manager
