@@ -13,16 +13,16 @@ from seleniumwire import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import WebDriverException
 
-# --- Настройки ---
-EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')  # поддерживаемые расширения 3D
+# --- Nastrojki ---
+EXTS = ('.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx')
 DEFAULT_WAIT = 6
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
 
 
 def default_download_root() -> Path:
-    """Подбор дефолтного каталога загрузки для разных ОС."""
+    """Podbor defolt. kataloga zagruzki dlya raznyh OS."""
     home = Path.home()
-    for cand in (home / 'Downloads', home / 'Загрузки'):
+    for cand in (home / 'Downloads', home / 'Zagruzki'):
         try:
             cand.mkdir(parents=True, exist_ok=True)
             return cand
@@ -33,10 +33,10 @@ def default_download_root() -> Path:
 
 DEFAULT_DOWNLOAD_FOLDER = str(default_download_root())
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
+# ---------- VSPOMOGATEL'NYE FUNKCII ----------
 
 def resolve_out_folder(path_like: str | None) -> str:
-    r"""Нормализует путь вывода (переменные окружения, ~, абсолютность)."""
+    """Normalizuet put' vyvoda (peremennye okruzheniya, ~, absolyutnost')."""
     if not path_like:
         path_like = DEFAULT_DOWNLOAD_FOLDER
     p = os.path.expandvars(os.path.expanduser(path_like))
@@ -51,7 +51,7 @@ def ensure_folder(path: str):
 
 
 def unique_path(out_path: str) -> str:
-    """Возвращает уникальный путь (file (1).ext, file (2).ext, ...)."""
+    """Vozvrashchaet unikalnyj put' (file (1).ext, file (2).ext, ...)."""
     base, ext = os.path.splitext(out_path)
     cand = out_path
     i = 1
@@ -71,20 +71,18 @@ def is_3d_url(u: str) -> bool:
     return any(p.endswith(ext) for ext in EXTS)
 
 
-# ---------- СОХРАНЕНИЕ АРТЕФАКТОВ (ГАРАНТИРУЕТ ФАЙЛЫ) ----------
+# ---------- SOHRANENIE ARTEFAKTOV ----------
 
 def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     ts = time.strftime('%Y%m%d_%H%M%S')
     artifacts: dict[str, str] = {}
 
-    # Итоговый HTML
     html_name = f'page_{ts}.html'
     html_path = unique_path(os.path.join(out_folder, html_name))
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(driver.page_source or '')
     artifacts['page_html'] = html_path
 
-    # Список всех сетевых URL (из selenium-wire)
     urls_name = f'network_urls_{ts}.txt'
     urls_path = unique_path(os.path.join(out_folder, urls_name))
     with open(urls_path, 'w', encoding='utf-8') as f:
@@ -95,7 +93,6 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
                 continue
     artifacts['network_urls'] = urls_path
 
-    # Манифест для удобства отладки
     manifest_name = f'manifest_{ts}.json'
     manifest_path = unique_path(os.path.join(out_folder, manifest_name))
     payload = {'timestamp': ts, 'page_url': page_url, 'artifacts': artifacts}
@@ -106,9 +103,9 @@ def save_page_artifacts(driver, out_folder: str, page_url: str) -> dict:
     return artifacts
 
 
-# ---------- СКАЧИВАНИЕ ----------
+# ---------- SKACHIVANIE ----------
 
-_CD_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
+_CD_RE = re.compile(r'filename\*?=(?:UTF-8\'\'\')?"?([^";]+)"?', re.IGNORECASE)
 
 def pick_filename_from_headers(url: str, resp: requests.Response) -> str:
     parsed = urlparse(url)
@@ -129,7 +126,7 @@ def pick_filename_from_headers(url: str, resp: requests.Response) -> str:
 
 
 def save_data_url(data_url: str, out_folder: str) -> str | None:
-    """Сохраняет встроенный data:...;base64,... ресурс."""
+    """Sokhranyaet vstroenny data:...;base64,... resurs."""
     try:
         header, b64 = data_url.split(',', 1)
     except ValueError:
@@ -197,7 +194,7 @@ def download_url(url: str, out_folder: str, session: requests.Session | None = N
         return None
 
 
-# ---------- ПОИСК 3D-ССЫЛОК В HTML ----------
+# ---------- POISK 3D-SSYLOK V HTML ----------
 
 def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
     soup = BeautifulSoup(html, 'html.parser')
@@ -213,24 +210,21 @@ def find_3d_urls_from_html(page_url: str, html: str) -> set[str]:
         if is_3d_url(full):
             found.add(full)
 
-    # data-* и прочие атрибуты, куда могли положить путь к модели
     for t in soup.find_all(True):
         for _, val in t.attrs.items():
             if isinstance(val, str) and is_3d_url(val):
                 found.add(urljoin(page_url, val))
 
-    # Явные вхождения расширений в тексте
     for m in re.finditer(r'["\']([^"\']+\.(?:gltf|glb|obj|stl|ply|fbx)(?:\?[^"\']*)?)["\']', html, re.IGNORECASE):
         found.add(urljoin(page_url, m.group(1)))
 
-    # data:...;base64,...
     for m in re.finditer(r'(data:[^,]+;base64,[A-Za-z0-9+/=]+)', html):
         found.add(m.group(1))
 
     return found
 
 
-# ---------- ОСНОВНАЯ ЛОГИКА ----------
+# ---------- OSNOVNAYA LOGIKA ----------
 
 def parse_dynamic_page(page_url: str,
                        out_folder: str = DEFAULT_DOWNLOAD_FOLDER,
@@ -252,7 +246,7 @@ def parse_dynamic_page(page_url: str,
         driver = webdriver.Chrome(options=chrome_opts)
     except WebDriverException as e:
         print('Error starting Chrome driver:', e)
-        print('Убедитесь, что Chrome/ChromeDriver установлены и совместимы.')
+        print('Ubedites, chto Chrome/ChromeDriver ustanovleny i sovmestimy.')
         return []
 
     session = requests.Session()
@@ -293,7 +287,7 @@ def parse_dynamic_page(page_url: str,
         if not any(Path(p).suffix.lower() in EXTS for p in results) and marker_on_empty:
             marker = unique_path(os.path.join(out_folder, 'NO_3D_FOUND.txt'))
             with open(marker, 'w', encoding='utf-8') as f:
-                f.write(f'URL: {page_url}\n3D-расширения: {", ".join(EXTS)}\nНа странице не найдены 3D-ресурсы.')
+                f.write(f'URL: {page_url}\n3D-extensions: {chr(44).join(EXTS)}\nNo 3D resources found.')
             results.append(marker)
             print('Created marker ->', marker)
 
@@ -305,29 +299,30 @@ def parse_dynamic_page(page_url: str,
             pass
 
 
-# ---------- CLI/ИНТЕРАКТИВ ----------
+# ---------- CLI/INTERAKTIV ----------
 
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser(description='Ищет 3D-ресурсы на странице, сохраняет модели и артефакты.')
-    # URL теперь НЕобязательный (если не передан — спросим интерактивно)
-    parser.add_argument('url', nargs='?', help='Page URL, например: https://yandex.ru/')
+    parser = argparse.ArgumentParser(description='Ishchet 3D-resursy na stranitse, sohranyaet modeli i artefakty.')
+    parser.add_argument('url', nargs='?', help='Page URL, naprimer: https://example.com/')
     parser.add_argument('--out', default=DEFAULT_DOWNLOAD_FOLDER,
-                        help='Каталог вывода (абс./относительный путь, поддерживаются ~ и переменные окружения)')
-    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT, help='Пауза ожидания динамического контента, сек')
-    parser.add_argument('--no-artifacts', action='store_true', help='Не сохранять HTML/список сетевых URL/манифест')
-    parser.add_argument('--no-empty-marker', action='store_true', help='Не создавать NO_3D_FOUND.txt при отсутствии 3D')
+                        help='Katalog vyvoda')
+    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT,
+                        help='Pauza ozhidaniya dinamicheskogo kontenta, sek')
+    parser.add_argument('--no-artifacts', action='store_true',
+                        help='Ne sohranyat HTML/spisok setevyh URL/manifest')
+    parser.add_argument('--no-empty-marker', action='store_true',
+                        help='Ne sozdavat NO_3D_FOUND.txt pri otsutstvii 3D')
 
     args = parser.parse_args()
 
     url = args.url
     if not url:
-        # Интерактивный режим, если URL не передан
         url = input('Page URL: ').strip()
 
     if not url:
-        print('URL не указан — работа прекращена.')
+        print('URL ne ukazan -- rabota prekrashchena.')
     else:
         files = parse_dynamic_page(
             url,
@@ -336,119 +331,6 @@ if __name__ == '__main__':
             save_artifacts=not args.no_artifacts,
             marker_on_empty=not args.no_empty_marker,
         )
-        print('\nГотово. Сохранено файлов:', len(files))
-        for p in files:
-            print(' -', p)
-
-from seleniumwire import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import WebDriverException
-
-# ---------- ОСНОВНАЯ ЛОГИКА ----------
-
-def parse_dynamic_page(page_url: str,
-                       out_folder: str = DEFAULT_DOWNLOAD_FOLDER,
-                       wait: int = DEFAULT_WAIT,
-                       save_artifacts: bool = True,
-                       marker_on_empty: bool = True) -> list[str]:
-    out_folder = resolve_out_folder(out_folder)
-    ensure_folder(out_folder)
-
-    chrome_opts = Options()
-    chrome_opts.add_argument('--headless=new')
-    chrome_opts.add_argument('--disable-gpu')
-    chrome_opts.add_argument('--no-sandbox')
-    chrome_opts.add_argument('--disable-dev-shm-usage')
-    chrome_opts.add_argument('--disable-blink-features=AutomationControlled')
-    chrome_opts.add_argument(f'--user-agent={USER_AGENT}')
-
-    try:
-        driver = webdriver.Chrome(options=chrome_opts)
-    except WebDriverException as e:
-        print('Error starting Chrome driver:', e)
-        print('Убедитесь, что Chrome/ChromeDriver установлены и совместимы.')
-        return []
-
-    session = requests.Session()
-    session.headers.update({'User-Agent': USER_AGENT})
-
-    try:
-        print('Opening page:', page_url)
-        driver.scopes = ['.*']
-        driver.get(page_url)
-        print(f'Waiting {wait} seconds for dynamic content to load...')
-        time.sleep(wait)
-
-        results: list[str] = []
-
-        if save_artifacts:
-            artifacts = save_page_artifacts(driver, out_folder, page_url)
-            results.extend(artifacts.values())
-
-        print('Scanning network requests...')
-        found = set()
-        for req in driver.requests:
-            try:
-                if is_3d_url(req.url):
-                    found.add(req.url)
-            except Exception:
-                continue
-
-        print('Scanning page HTML...')
-        html = driver.page_source
-        found.update(find_3d_urls_from_html(page_url, html))
-        print('Found', len(found), 'candidate 3D URLs')
-
-        for url in sorted(found):
-            saved = download_url(url, out_folder, session=session)
-            if saved:
-                results.append(saved)
-
-        if not any(Path(p).suffix.lower() in EXTS for p in results) and marker_on_empty:
-            marker = unique_path(os.path.join(out_folder, 'NO_3D_FOUND.txt'))
-            with open(marker, 'w', encoding='utf-8') as f:
-                f.write(f'URL: {page_url}\n3D-расширения: {", ".join(EXTS)}\nНа странице не найдены 3D-ресурсы.')
-            results.append(marker)
-            print('Created marker ->', marker)
-
-        return results
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
-
-# ---------- CLI/ИНТЕРАКТИВ ----------
-
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Ищет 3D-ресурсы на странице, сохраняет модели и артефакты.')
-    # URL теперь НЕобязательный (если не передан — спросим интерактивно)
-    parser.add_argument('url', nargs='?', help='Page URL, например: https://yandex.ru/')
-    parser.add_argument('--out', default=DEFAULT_DOWNLOAD_FOLDER,
-                        help='Каталог вывода (абс./относительный путь, поддерживаются ~ и переменные окружения)')
-    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT, help='Пауза ожидания динамического контента, сек')
-    parser.add_argument('--no-artifacts', action='store_true', help='Не сохранять HTML/список сетевых URL/манифест')
-    parser.add_argument('--no-empty-marker', action='store_true', help='Не создавать NO_3D_FOUND.txt при отсутствии 3D')
-
-    args = parser.parse_args()
-
-    url = args.url
-    if not url:
-        # Интерактивный режим, если URL не передан
-        url = input('Page URL: ').strip()
-
-    if not url:
-        print('URL не указан — работа прекращена.')
-    else:
-        files = parse_dynamic_page(
-            url,
-            out_folder=args.out,
-            wait=args.wait,
-            save_artifacts=not args.no_artifacts,
-            marker_on_empty=not args.no_empty_marker,
-        )
-        print('\nГотово. Сохранено файлов:', len(files))
+        print('\nGotovo. Sokhraneno fajlov:', len(files))
         for p in files:
             print(' -', p)
